@@ -108,7 +108,6 @@ def create_demo(model_name: str, device: str = "cuda" if torch.cuda.is_available
                 target_prompt = gr.Textbox(label="Target Prompt", value="")
                 source_guidance = gr.Slider(0.0, 10.0, 1.5, step=0.05, label="Source Guidance")
                 target_guidance = gr.Slider(0.0, 10.0, 1.5, step=0.05, label="Target Guidance")
-                init_image = gr.Image(label="Input Image", visible=True, type='pil')
                 generate_btn = gr.Button("Generate")
                 
                 with gr.Accordion("Advanced Options", open=True):
@@ -118,10 +117,15 @@ def create_demo(model_name: str, device: str = "cuda" if torch.cuda.is_available
                     n_max = gr.Slider(1, 100, 24, step=1, label="max editing step")
                     n_avg = gr.Slider(1, 100, 1, step=1, label="number of predictions to average")
                     seed = gr.Textbox(None, label="Seed")
-            
+            with gr.Column():
+                init_image = gr.Image(label="Input Image", visible=True, type='pil')
+
             with gr.Column():
                 output_image = gr.Image(label="Generated Image")
+
+            with gr.Column():
                 diff_image   = gr.Image(label="Difference (|input - output|)", type="pil")
+
         generate_btn.click(
             fn=editor.edit,
             inputs=[        

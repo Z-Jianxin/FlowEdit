@@ -8,10 +8,25 @@ import random
 from diffusers import FluxPipeline
 from FlowEdit_utils import FlowEditFLUX
 
+from transformers import CLIPProcessor, CLIPModel
+
+
 class FluxEditor:
     def __init__(self):
         self.pipe = FluxPipeline.from_pretrained("black-forest-labs/FLUX.1-dev", torch_dtype=torch.float16).to("cuda")
-    
+        self.clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32") # it's lightweighted so it can live on CPU
+        self.clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+
+    def print_clip_score(self, image, prompt):
+        clip_inputs = self.clip_processor(
+            text=[prompt,],
+            images=image,
+            return_tensors="pt",
+            padding=True,
+        )
+        clip_outputs = self.clip_model(**clip_inputs)
+        print("CLIP score: ", clip_outputs.logits_per_image.detach().item())
+
     def edit(
         self,
         image,
@@ -81,7 +96,16 @@ class FluxEditor:
         self.pipe = self.pipe.to("cpu")
         torch.cuda.empty_cache()
         print("End Edit")
-        
+
+        print("target prompt vs target image: ")
+        self.print_clip_score(edited_image, target_prompt)
+        print("target prompt vs source image: ")
+        self.print_clip_score(init_resized, target_prompt)
+        print("source prompt vs target image: ")
+        self.print_clip_score(edited_image, source_prompt)
+        print("source prompt vs source image: ")
+        self.print_clip_score(init_resized, source_prompt)
+
         arr1 = np.array(init_resized, dtype=np.float32)
         arr2 = np.array(edited_image, dtype=np.float32)
 

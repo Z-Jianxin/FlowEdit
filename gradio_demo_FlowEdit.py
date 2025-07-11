@@ -107,7 +107,7 @@ def create_demo(model_name: str, device: str = "cuda" if torch.cuda.is_available
                 source_prompt = gr.Textbox(label="Source Prompt", value="")
                 target_prompt = gr.Textbox(label="Target Prompt", value="")
                 source_guidance = gr.Slider(0.0, 10.0, 1.5, step=0.05, label="Source Guidance")
-                target_guidance = gr.Slider(0.0, 10.0, 1.5, step=0.05, label="Target Guidance")
+                target_guidance = gr.Slider(0.0, 10.0, 5.5, step=0.05, label="Target Guidance")
                 generate_btn = gr.Button("Generate")
                 
                 with gr.Accordion("Advanced Options", open=True):

@@ -9,13 +9,20 @@ from diffusers import FluxPipeline
 from FlowEdit_utils import FlowEditFLUX
 
 from transformers import CLIPProcessor, CLIPModel
-
+import lpips
+import torchvision.transforms as transforms
 
 class FluxEditor:
     def __init__(self):
         self.pipe = FluxPipeline.from_pretrained("black-forest-labs/FLUX.1-dev", torch_dtype=torch.float16).to("cuda")
         self.clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32") # it's lightweighted so it can live on CPU
         self.clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+        self.lpips = lpips.LPIPS(net='vgg').to('cuda')
+        self.lpips_transform = transforms.Compose([
+            transforms.Resize((1024, 1024)),  # resize for consistency (optional)
+            transforms.ToTensor(),
+            transforms.Normalize((0.5,), (0.5,))  # LPIPS expects inputs in [-1, 1]
+        ])
 
     def print_clip_score(self, image, prompt):
         clip_inputs = self.clip_processor(
@@ -94,8 +101,6 @@ class FluxEditor:
             edited_image.convert("RGB")
         )
         self.pipe = self.pipe.to("cpu")
-        torch.cuda.empty_cache()
-        print("End Edit")
 
         print("target prompt vs target image: ")
         self.print_clip_score(edited_image, target_prompt)
@@ -116,6 +121,12 @@ class FluxEditor:
         mse_median = np.median((arr1 - arr2) ** 2)
         print("L1 Distance:", mae, "median:", mae_median)
         print("L2 Distance:", mse, "median:", mse_median)
+        
+        with torch.no_grad():
+            dist = self.lpips(self.lpips_transform(init_resized).to("cuda"), self.lpips_transform(edited_image).to("cuda"))
+        print("LPIPS distance: ", dist.item())
+        torch.cuda.empty_cache()
+        print("End Edit\n\n")
         return edited_image, diff
 
 

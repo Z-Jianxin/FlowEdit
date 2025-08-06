@@ -12,17 +12,35 @@ from transformers import CLIPProcessor, CLIPModel
 import lpips
 import torchvision.transforms as transforms
 
+import timm
+
 class FluxEditor:
     def __init__(self):
         self.pipe = FluxPipeline.from_pretrained("black-forest-labs/FLUX.1-dev", torch_dtype=torch.float16).to("cuda")
-        self.clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32") # it's lightweighted so it can live on CPU
-        self.clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+        self.clip_model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14-336") # it's lightweighted so it can live on CPU
+        self.clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14-336")
         self.lpips = lpips.LPIPS(net='vgg').to('cuda')
         self.lpips_transform = transforms.Compose([
             transforms.Resize((1024, 1024)),  # resize for consistency (optional)
             transforms.ToTensor(),
             transforms.Normalize((0.5,), (0.5,))  # LPIPS expects inputs in [-1, 1]
         ])
+        
+                
+        self.dino = timm.create_model('vit_small_patch16_224.dino', pretrained=True, num_classes=0).to('cuda')
+        self.dino.eval()
+        self.dino_transform = transforms.Compose([
+            transforms.Resize(256), transforms.CenterCrop(224), transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+
+    def dino_dist(self, img1, img2):
+        img1 = self.dino_transform(img1).unsqueeze(0)
+        img2 = self.dino_transform(img2).unsqueeze(0)
+        with torch.no_grad():
+            emb1 = F.normalize(self.dino(img1.to('cuda')), dim=1)
+            emb2 = F.normalize(self.dino(img2.to('cuda')), dim=1)
+        return F.cosine_similarity(emb1, emb2).item()
 
     def print_clip_score(self, image, prompt):
         clip_inputs = self.clip_processor(
@@ -40,6 +58,7 @@ class FluxEditor:
         source_prompt,
         target_prompt,
         negative_prompt,
+        eval_prompt,
         T_steps,
         n_avg,
         source_guidance_scale,
@@ -102,7 +121,12 @@ class FluxEditor:
         )
         self.pipe = self.pipe.to("cpu")
 
-        print("target prompt vs target image: ")
+        print("eval prompt vs target image: ")
+        self.print_clip_score(edited_image, eval_prompt)
+        print("eval prompt vs source image: ")
+        self.print_clip_score(init_resized, eval_prompt)
+
+        print("\ntarget prompt vs target image: ")
         self.print_clip_score(edited_image, target_prompt)
         print("target prompt vs source image: ")
         self.print_clip_score(init_resized, target_prompt)
@@ -125,6 +149,11 @@ class FluxEditor:
         with torch.no_grad():
             dist = self.lpips(self.lpips_transform(init_resized).to("cuda"), self.lpips_transform(edited_image).to("cuda"))
         print("LPIPS distance: ", dist.item())
+        
+        with torch.no_grad():
+            dist = self.dino_dist(init_resized, edited_image)
+        print("DINO distance: ", 1.0-dist)
+        
         torch.cuda.empty_cache()
         print("End Edit\n\n")
         return edited_image, diff_img
@@ -146,6 +175,7 @@ def create_demo(model_name: str, device: str = "cuda" if torch.cuda.is_available
                 generate_btn = gr.Button("Generate")
                 
                 with gr.Accordion("Advanced Options", open=True):
+                    eval_prompt = gr.Textbox(label="Prompt to evaluate generative quality", value=None)
                     negative_prompt = gr.Textbox(label="negative prompt for clip encoder", value=None)
                     num_steps = gr.Slider(1, 100, 28, step=1, label="Number of steps")
                     n_min = gr.Slider(1, 100, 0, step=1, label="min editing step")
@@ -168,6 +198,7 @@ def create_demo(model_name: str, device: str = "cuda" if torch.cuda.is_available
                 source_prompt,
                 target_prompt,
                 negative_prompt,
+                eval_prompt,
                 num_steps,
                 n_avg,
                 source_guidance,

@@ -1,21 +1,3 @@
-#!/usr/bin/env python3
-"""
-Run FlowEdit semantic‑editing experiments defined in a JSON dataset file.
-
-The implementation is a near‑verbatim copy of the official Gradio demo
-to guarantee that **the same seed ⇒ the same edited image bytes**.
-
-Metrics reported per example
-  • CLIP similarity (target prompt ↔ edited image)
-  • CLIP similarity (target prompt ↔ source image)
-  • LPIPS distance (edited image ↔ source image)
-  • Pixelwise L1 mean & median
-  • Pixelwise L2 mean & median
-  • Paths to edited & diff images
-
-Results are printed to stdout and also written to a CSV file.
-"""
-
 import argparse
 import csv
 import json
@@ -25,6 +7,7 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import torchvision.transforms as T
 from PIL import Image, ImageChops
 from transformers import CLIPModel, CLIPProcessor
@@ -34,19 +17,32 @@ from diffusers import FluxPipeline
 from FlowEdit_utils import FlowEditFLUX
 
 import lpips
+import timm  # NEW: DINO features
 
 # ------------------------------------------------------------
-# 1.  Metric helpers  (unchanged)
+# 1.  Metric helpers  (CLIP-L/14@336, LPIPS, DINO-S/16)
 # ------------------------------------------------------------
 class MetricComputer:
     def __init__(self, device: torch.device):
         self.device = device
-        self.clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
-        self.clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+
+        # UPDATED: CLIP ViT-L/14@336
+        self.clip_model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14-336").to(device)
+        self.clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14-336")
+
+        # LPIPS (same behavior; runs on `device`)
         self.lpips_fn = lpips.LPIPS(net="vgg").to(device)
         self.lpips_transform = T.Compose(
             [T.Resize((1024, 1024)), T.ToTensor(), T.Normalize((0.5,), (0.5,))]
         )
+
+        # NEW: DINO-S/16 backbone on `device`
+        self.dino = timm.create_model("vit_small_patch16_224.dino", pretrained=True, num_classes=0).to(device).eval()
+        self.dino_transform = T.Compose([
+            T.Resize(256), T.CenterCrop(224), T.ToTensor(),
+            T.Normalize(mean=[0.485, 0.456, 0.406],
+                        std=[0.229, 0.224, 0.225]),
+        ])
 
     @torch.inference_mode()
     def clip_similarity(self, image: Image.Image, text: str) -> float:
@@ -59,6 +55,15 @@ class MetricComputer:
         t1 = self.lpips_transform(img1).unsqueeze(0).to(self.device)
         t2 = self.lpips_transform(img2).unsqueeze(0).to(self.device)
         return self.lpips_fn(t1, t2).item()
+
+    @torch.inference_mode()
+    def dino_distance(self, img1: Image.Image, img2: Image.Image) -> float:
+        x1 = self.dino_transform(img1).unsqueeze(0).to(self.device)
+        x2 = self.dino_transform(img2).unsqueeze(0).to(self.device)
+        f1 = F.normalize(self.dino(x1), dim=1)
+        f2 = F.normalize(self.dino(x2), dim=1)
+        cos_sim = F.cosine_similarity(f1, f2).item()
+        return 1.0 - float(cos_sim)
 
     @staticmethod
     def pixel_distances(img1: Image.Image, img2: Image.Image) -> Tuple[float, float, float, float]:
@@ -208,12 +213,14 @@ def run_edit(
     clip_edit = metric.clip_similarity(edited, target_prompt)
     clip_src  = metric.clip_similarity(init_pil, target_prompt)
     lpips_val = metric.lpips_distance(init_pil, edited)
+    dino_val  = metric.dino_distance(init_pil.resize(edited.size, Image.Resampling.LANCZOS), edited)
     l1_mean, l1_med, l2_mean, l2_med = metric.pixel_distances(init_pil.resize(edited.size), edited)
 
     return {
         "clip_target_edit": clip_edit,
         "clip_target_src":  clip_src,
         "lpips":            lpips_val,
+        "dino":             dino_val,
         "l1_mean":          l1_mean,
         "l1_median":        l1_med,
         "l2_mean":          l2_mean,
